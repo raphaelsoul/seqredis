@@ -1,11 +1,13 @@
 const debug = require("debug")("seqredis");
-const crypto = require("crypto");
+const hash = require("node-object-hash")().hash;
 
 const METHODS = [
 	"findByPrimary", "findById", "findByPk",
 	"find", "findOne",
 	"findAndCount", "findAndCountAll",
 	"findOrInitialize", "findOrBuild",
+
+	"findAll"
 ];
 
 const hackModel = (model, options) => {
@@ -14,6 +16,9 @@ const hackModel = (model, options) => {
 	METHODS.map(method => {
 		model[`_cache_${method}`] = model[method];
 		model[method] = function (...args) {
+			args.method = method;
+			args.tableName = model.tableName;
+			args.modelName = model.name;
 			const key = generateKey(args);
 			return cacher.read(key).then(reply => {
 				if (!reply) {
@@ -22,10 +27,23 @@ const hackModel = (model, options) => {
 				}
 				debug("should init instance with cached data");
 
-				let instance = model.build(JSON.parse(reply)); // todo need a better way
-				instance.hitCache = true;
-				instance.isNewRecord = false;
-				return instance;
+				reply = JSON.parse(reply);
+
+				if (!Array.isArray(reply)) {
+					let instance = model.build(reply); // todo need a better way
+					instance.hitCache = true;
+					instance.isNewRecord = false;
+					return instance;
+				}
+
+				let rows = reply.map(row => {
+					let instance = model.build(row);
+					instance.hitCache = true;
+					instance.isNewRecord = false;
+					return instance;
+				});
+				rows.hitCache = true;
+				return rows;
 			}).then(data => {
 				// insert into redis
 				return cacher.write(key, data, options.ttl).then(() => data);
@@ -36,7 +54,9 @@ const hackModel = (model, options) => {
 
 const DEFAULTS = {
 	namespace: "seqredis",
-	generateKey: args => crypto.createHash("sha256").update(Buffer.from(args)).digest('hex'),
+	generateKey: args => {
+		return hash(args);
+	},
 	ttl: 1000 * 60 * 10,
 };
 
